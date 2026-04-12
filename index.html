@@ -46,6 +46,10 @@
     border-bottom: 1px solid var(--border);
   }
 
+  nav.scrolled .nav-logo img {
+    height: 48px;
+  }
+
   .nav-logo {
     text-decoration: none;
     display: flex;
@@ -55,6 +59,7 @@
   .nav-logo img {
     height: 96px;
     filter: brightness(0) invert(1) opacity(0.85);
+    transition: height 0.3s ease;
   }
 
   .nav-links {
