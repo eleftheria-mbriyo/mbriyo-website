@@ -1118,7 +1118,7 @@
   </div>
   <div class="hero-visual">
     <div class="mechanism-container">
-      <img src="arch-diagram.png" alt="Antikythera Mechanism" style="width:100%; height:100%; object-fit:contain; opacity:0.9;">
+      <canvas class="mechanism-canvas" id="mechanism" width="1040" height="1040" style="width:100%; height:100%;"></canvas>
     </div>
   </div>
 </section>
@@ -1565,6 +1565,307 @@
   }
   animateWaves();
 })();
+
+// Pixel Reveal Animation Engine
+// Loads an image, breaks it into a grid, reveals pixels randomly
+const canvas = document.getElementById('mechanism');
+const ctx = canvas.getContext('2d');
+const dpr = window.devicePixelRatio || 1;
+canvas.width = 1040 * dpr;
+canvas.height = 1040 * dpr;
+ctx.scale(dpr, dpr);
+const W = 1040;
+const H = 1040;
+
+// === CONFIG ===
+const PIXEL_SIZE = 6;          // size of each "pixel" block
+const INITIAL_DELAY = 2.0;     // seconds before animation starts
+const REVEAL_DURATION = 7.0;   // seconds to fully reveal (6-8s range)
+const SILVER_DURATION = 3.0;   // seconds to sweep white → silver
+const BG_COLOR = [13, 31, 60]; // matches hero bg (#0d1f3c)
+
+// Silver color — warm metallic silver
+const SILVER_R = 192, SILVER_G = 192, SILVER_B = 200;
+
+// Pixel grid data
+let pixels = [];
+let totalPixels = 0;
+let imageLoaded = false;
+
+// Animation state
+let phase = 'waiting'; // waiting -> revealing -> silvering -> holding
+let phaseTimer = 0;
+let revealedCount = 0;
+let silverOrder = [];
+
+// Use mechanism image as source
+const heroImg = new Image();
+heroImg.src = 'halftone-reveal.png';
+
+heroImg.onload = function() {
+  const offCanvas = document.createElement('canvas');
+  const offCtx = offCanvas.getContext('2d', { willReadFrequently: true });
+
+  const scale = Math.min(W / heroImg.width, H / heroImg.height) * 0.95;
+  const imgW = heroImg.width * scale;
+  const imgH = heroImg.height * scale;
+  const offsetX = (W - imgW) / 2;
+  const offsetY = (H - imgH) / 2;
+
+  offCanvas.width = W;
+  offCanvas.height = H;
+  offCtx.drawImage(heroImg, offsetX, offsetY, imgW, imgH);
+
+  let imageData;
+  try {
+    imageData = offCtx.getImageData(0, 0, W, H);
+  } catch(e) {
+    console.error('Canvas tainted — cannot read pixels:', e);
+    return;
+  }
+  const data = imageData.data;
+
+  pixels = [];
+  const cols = Math.ceil(W / PIXEL_SIZE);
+  const rows = Math.ceil(H / PIXEL_SIZE);
+
+  for (let row = 0; row < rows; row++) {
+    for (let col = 0; col < cols; col++) {
+      const sx = col * PIXEL_SIZE + Math.floor(PIXEL_SIZE / 2);
+      const sy = row * PIXEL_SIZE + Math.floor(PIXEL_SIZE / 2);
+      if (sx >= W || sy >= H) continue;
+
+      const idx = (sy * W + sx) * 4;
+      const r = data[idx];
+      const g = data[idx + 1];
+      const b = data[idx + 2];
+      const a = data[idx + 3];
+
+      if (a < 20) continue;
+
+      pixels.push({
+        x: col * PIXEL_SIZE,
+        y: row * PIXEL_SIZE,
+        r, g, b, a,
+        visible: false,
+        silverProgress: 0  // 0 = white, 1 = silver
+      });
+    }
+  }
+
+  totalPixels = pixels.length;
+
+  // === LAND LEFT-TO-RIGHT — leftmost pixels land first ===
+  const sortedIndices = pixels
+    .map((px, i) => ({ i, x: px.x + Math.random() * 60 }))
+    .sort((a, b) => a.x - b.x)  // leftmost first
+    .map(item => item.i);
+
+  sortedIndices.forEach((pixelIdx, order) => {
+    pixels[pixelIdx].revealOrder = order;
+  });
+
+  // Silver sweep: also left-to-right
+  silverOrder = pixels
+    .map((px, i) => ({ i, x: px.x + Math.random() * 60 }))
+    .sort((a, b) => a.x - b.x)
+    .map(item => item.i);
+
+  imageLoaded = true;
+  revealedCount = 0;
+  phase = 'waiting';
+  phaseTimer = 0;
+};
+
+// Draw a single pixel dot
+function drawPixel(px, alpha, flyProgress, time) {
+  const srcAlpha = px.a / 255;
+
+  // Interpolate white → silver based on silverProgress
+  const sp = px.silverProgress;
+  const cr = Math.round(255 + (SILVER_R - 255) * sp);
+  const cg = Math.round(255 + (SILVER_G - 255) * sp);
+  const cb = Math.round(255 + (SILVER_B - 255) * sp);
+
+  const finalX = px.x + PIXEL_SIZE / 2;
+  const finalY = px.y + PIXEL_SIZE / 2;
+
+  let drawX = finalX;
+  let drawY = finalY;
+  let drawRadius = PIXEL_SIZE * 0.4 * (0.4 + srcAlpha * 0.6);
+  let drawAlpha = alpha * (0.3 + srcAlpha * 0.7);
+
+  if (flyProgress < 1) {
+    const t = 1 - flyProgress;
+
+    const seed = (px.x * 7 + px.y * 13) % 1000 / 1000;
+    const arcHeight = (seed - 0.5) * 400;
+    const lateralSpread = seed * 300;
+
+    const easeT = t < 0.5
+      ? 2 * t * t
+      : 1 - Math.pow(-2 * t + 2, 3) / 2;
+
+    const startX = W + 150 + lateralSpread;
+    const startY = finalY + arcHeight * t;
+
+    const controlX = finalX + (startX - finalX) * 0.4;
+    const controlY = finalY + arcHeight * 0.7;
+
+    const t2 = easeT;
+    drawX = (1-t2)*(1-t2)*startX + 2*(1-t2)*t2*controlX + t2*t2*finalX;
+    drawY = (1-t2)*(1-t2)*startY + 2*(1-t2)*t2*controlY + t2*t2*finalY;
+
+    drawRadius *= 1 + t * 1.5;
+    drawAlpha = Math.min(1, drawAlpha * (1 + t * 2));
+
+    // Motion trail
+    if (t > 0.1) {
+      for (let trail = 1; trail <= 3; trail++) {
+        const trailT = Math.min(1, t + trail * 0.04);
+        const tt2 = 1 - (trailT < 0.5 ? 2*trailT*trailT : 1 - Math.pow(-2*trailT+2,3)/2);
+        const tx = (1-tt2)*(1-tt2)*startX + 2*(1-tt2)*tt2*controlX + tt2*tt2*finalX;
+        const ty = (1-tt2)*(1-tt2)*startY + 2*(1-tt2)*tt2*controlY + tt2*tt2*finalY;
+        ctx.save();
+        ctx.globalAlpha = drawAlpha * (0.15 / trail);
+        ctx.beginPath();
+        ctx.arc(tx, ty, drawRadius * (0.7 / trail), 0, Math.PI * 2);
+        ctx.fillStyle = `rgb(255, 255, 255)`;
+        ctx.fill();
+        ctx.restore();
+      }
+    }
+  } else {
+    // Settled — gentle breathing pulse
+    const breathe = Math.sin(time * 2 + px.x * 0.01 + px.y * 0.01) * 0.08;
+    drawRadius *= 1 + breathe;
+    drawAlpha *= 1 + breathe * 0.3;
+  }
+
+  ctx.save();
+  ctx.globalAlpha = drawAlpha;
+
+  // Slight glow on brighter dots
+  if (srcAlpha > 0.6 && flyProgress >= 1) {
+    ctx.beginPath();
+    ctx.arc(drawX, drawY, drawRadius * 2.5, 0, Math.PI * 2);
+    const glowB = sp > 0.5 ? cb : 255;
+    ctx.fillStyle = `rgba(${cr}, ${cg}, ${glowB}, 0.03)`;
+    ctx.fill();
+  }
+
+  // Silver shimmer during transition
+  if (sp > 0 && sp < 1) {
+    const shimmer = Math.sin(time * 8 + px.x * 0.05) * 0.15 + 0.15;
+    ctx.beginPath();
+    ctx.arc(drawX, drawY, drawRadius * 1.8, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(220, 225, 240, ${shimmer * drawAlpha})`;
+    ctx.fill();
+  }
+
+  ctx.beginPath();
+  ctx.arc(drawX, drawY, Math.max(0.8, drawRadius), 0, Math.PI * 2);
+  ctx.fillStyle = `rgb(${cr}, ${cg}, ${cb})`;
+  ctx.fill();
+
+  ctx.restore();
+}
+
+let lastTime = 0;
+function animate(time) {
+  const dt = lastTime ? Math.min((time - lastTime) / 1000, 0.05) : 0.016;
+  lastTime = time;
+  phaseTimer += dt;
+
+  ctx.clearRect(0, 0, W, H);
+
+  if (!imageLoaded) {
+    const pulse = Math.sin(time * 0.003) * 0.3 + 0.5;
+    ctx.beginPath();
+    ctx.arc(W/2, H/2, 8, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(100, 160, 230, ${pulse})`;
+    ctx.fill();
+    requestAnimationFrame(animate);
+    return;
+  }
+
+  if (phase === 'waiting') {
+    if (phaseTimer > INITIAL_DELAY) {
+      phase = 'revealing';
+      phaseTimer = 0;
+    }
+    requestAnimationFrame(animate);
+    return;
+
+  } else if (phase === 'revealing') {
+    const progress = Math.min(phaseTimer / REVEAL_DURATION, 1);
+    const eased = 1 - Math.pow(1 - progress, 2.5);
+    const targetCount = Math.floor(eased * totalPixels);
+
+    for (let i = revealedCount; i < targetCount && i < totalPixels; i++) {
+      const pxIdx = pixels.findIndex(p => p.revealOrder === i);
+      if (pxIdx >= 0) pixels[pxIdx].visible = true;
+    }
+    revealedCount = targetCount;
+
+    pixels.forEach(px => {
+      if (px.visible) {
+        const orderDist = revealedCount - px.revealOrder;
+        const fadeIn = Math.min(orderDist / (totalPixels * 0.08), 1);
+        const flyProgress = Math.min(orderDist / (totalPixels * 0.04), 1);
+        drawPixel(px, fadeIn, flyProgress, phaseTimer);
+      }
+    });
+
+    if (progress >= 1) {
+      phase = 'silvering';
+      phaseTimer = 0;
+      revealedCount = 0;
+    }
+
+  } else if (phase === 'silvering') {
+    // Sweep white → silver, left to right
+    const progress = Math.min(phaseTimer / SILVER_DURATION, 1);
+    const eased = 1 - Math.pow(1 - progress, 2);
+
+    // Each dot transitions individually over ~0.4s once reached by the sweep
+    const sweepFront = eased * totalPixels;
+    const transitionWindow = totalPixels * 0.15; // 15% of dots transitioning at once
+
+    silverOrder.forEach((pxIdx, order) => {
+      const px = pixels[pxIdx];
+      if (!px.visible) return;
+
+      // How far past the sweep front is this dot?
+      const distFromFront = sweepFront - order;
+      if (distFromFront > 0) {
+        px.silverProgress = Math.min(distFromFront / transitionWindow, 1);
+      }
+    });
+
+    pixels.forEach(px => {
+      if (px.visible) drawPixel(px, 1, 1, phaseTimer);
+    });
+
+    if (progress >= 1) {
+      // Ensure all dots fully silver
+      pixels.forEach(px => { px.silverProgress = 1; });
+      phase = 'holding';
+      phaseTimer = 0;
+    }
+
+  } else if (phase === 'holding') {
+    // All silver — hold with breathing
+    pixels.forEach(px => {
+      if (px.visible) drawPixel(px, 1, 1, phaseTimer);
+    });
+  }
+
+  requestAnimationFrame(animate);
+}
+
+requestAnimationFrame(animate);
+
 // Nav scroll
 window.addEventListener('scroll', () => {
   document.querySelector('nav').classList.toggle('scrolled', window.scrollY > 50);
